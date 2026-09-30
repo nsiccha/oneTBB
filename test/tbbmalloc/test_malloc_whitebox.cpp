@@ -1713,6 +1713,60 @@ TEST_CASE("Ownership queries respect exact region bounds") {
     backend.regionList.remove(&regions[2]);
 }
 
+static int CheckRegionIndex(const MemRegion* region, const MemRegion* parent,
+                            uintptr_t lower, uintptr_t upper, int& count) {
+    if (!region) return 0;
+    const uintptr_t address = reinterpret_cast<uintptr_t>(region);
+    REQUIRE(address > lower);
+    REQUIRE(address < upper);
+    REQUIRE(region->parent == parent);
+    ++count;
+    const int left = CheckRegionIndex(region->left, region, lower, address, count);
+    const int right = CheckRegionIndex(region->right, region, address, upper, count);
+    REQUIRE(left <= right + 1);
+    REQUIRE(right <= left + 1);
+    REQUIRE(region->height == 1 + std::max(left, right));
+    return region->height;
+}
+
+TEST_CASE("Region index remains balanced through insertion and removal") {
+    const int count = 257;
+    for (int order : {0, 1, 2}) {
+        Backend backend{};
+        MemRegion regions[2 * count]{};
+        bool present[count]{};
+        for (int i = 0; i < count; ++i) {
+            const int slot = order == 0 ? i : order == 1 ? count - 1 - i : (73 * i) % count;
+            regions[2 * slot].allocSz = sizeof(MemRegion);
+            backend.regionList.add(&regions[2 * slot]);
+            present[slot] = true;
+            int indexed = 0;
+            CheckRegionIndex(backend.regionList.root, nullptr, 0, UINTPTR_MAX, indexed);
+            REQUIRE(indexed == i + 1);
+        }
+        for (int i = 0; i < count; ++i) {
+            const int slot = (101 * i) % count;
+            backend.regionList.remove(&regions[2 * slot]);
+            present[slot] = false;
+            int indexed = 0;
+            CheckRegionIndex(backend.regionList.root, nullptr, 0, UINTPTR_MAX, indexed);
+            REQUIRE(indexed == count - 1 - i);
+            for (int j = 0; j < count; ++j) {
+                {
+                    Backend::RegionGuard region(backend, &regions[2 * j]);
+                    REQUIRE(region.contains(&regions[2 * j], sizeof(MemRegion)) == present[j]);
+                }
+                {
+                    Backend::RegionGuard gap(backend, &regions[2 * j + 1]);
+                    REQUIRE_FALSE(gap.contains(&regions[2 * j + 1], 1));
+                }
+            }
+        }
+        REQUIRE(backend.regionList.root == nullptr);
+        REQUIRE(backend.regionList.head == nullptr);
+    }
+}
+
 TEST_CASE("Safe allocator entry points preserve mixed allocator ownership") {
     if (!isMallocInitialized()) doInitialization();
     auto system_free = [](void* ptr) { free(ptr); };

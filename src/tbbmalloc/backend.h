@@ -101,8 +101,15 @@ enum MemRegionType {
 class MemRegionList {
     friend class Backend;
     MallocMutex regionListLock;
+    static int height(const MemRegion* region);
+    static void updateHeight(MemRegion* region);
+    void replaceInIndex(MemRegion* region, MemRegion* replacement);
+    MemRegion* rotateLeft(MemRegion* region);
+    MemRegion* rotateRight(MemRegion* region);
+    void rebalance(MemRegion* region);
 public:
     MemRegion  *head;
+    MemRegion  *root; // intrusive AVL index, protected by regionListLock
     void add(MemRegion *r);
     void remove(MemRegion *r);
     int reportStat(FILE *f);

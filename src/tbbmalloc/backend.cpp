@@ -201,6 +201,9 @@ struct MemRegion {
     size_t     allocSz,   // got from pool callback
                blockSz;   // initial and maximal inner block size
     MemRegionType type;
+    // An intrusive address index avoids allocating while updating the backend.
+    MemRegion *left, *right, *parent;
+    int height;
 };
 
 // this data must be unmodified while block is in use, so separate it
@@ -1301,13 +1304,88 @@ Backend::RegionGuard::RegionGuard(Backend& backend, const void* object)
     : lock(backend.regionList.regionListLock), regionBegin(0), regionSize(0)
 {
     const uintptr_t p = reinterpret_cast<uintptr_t>(object);
-    for (MemRegion* region = backend.regionList.head; region; region = region->next) {
+    MemRegion* region = backend.regionList.root;
+    while (region) {
         const uintptr_t begin = reinterpret_cast<uintptr_t>(region);
-        if (p >= begin && p - begin < region->allocSz) {
+        if (p < begin) {
+            region = region->left;
+        } else if (p - begin >= region->allocSz) {
+            region = region->right;
+        } else {
             regionBegin = begin;
             regionSize = region->allocSz;
             break;
         }
+    }
+}
+
+int MemRegionList::height(const MemRegion* region)
+{
+    return region ? region->height : 0;
+}
+
+void MemRegionList::updateHeight(MemRegion* region)
+{
+    const int left = height(region->left);
+    const int right = height(region->right);
+    region->height = 1 + (left > right ? left : right);
+}
+
+void MemRegionList::replaceInIndex(MemRegion* region, MemRegion* replacement)
+{
+    if (!region->parent)
+        root = replacement;
+    else if (region == region->parent->left)
+        region->parent->left = replacement;
+    else
+        region->parent->right = replacement;
+    if (replacement)
+        replacement->parent = region->parent;
+}
+
+MemRegion* MemRegionList::rotateLeft(MemRegion* region)
+{
+    MemRegion* pivot = region->right;
+    replaceInIndex(region, pivot);
+    region->right = pivot->left;
+    if (region->right)
+        region->right->parent = region;
+    pivot->left = region;
+    region->parent = pivot;
+    updateHeight(region);
+    updateHeight(pivot);
+    return pivot;
+}
+
+MemRegion* MemRegionList::rotateRight(MemRegion* region)
+{
+    MemRegion* pivot = region->left;
+    replaceInIndex(region, pivot);
+    region->left = pivot->right;
+    if (region->left)
+        region->left->parent = region;
+    pivot->right = region;
+    region->parent = pivot;
+    updateHeight(region);
+    updateHeight(pivot);
+    return pivot;
+}
+
+void MemRegionList::rebalance(MemRegion* region)
+{
+    while (region) {
+        updateHeight(region);
+        const int balance = height(region->left) - height(region->right);
+        if (balance > 1) {
+            if (height(region->left->left) < height(region->left->right))
+                rotateLeft(region->left);
+            region = rotateRight(region);
+        } else if (balance < -1) {
+            if (height(region->right->right) < height(region->right->left))
+                rotateRight(region->right);
+            region = rotateLeft(region);
+        }
+        region = region->parent;
     }
 }
 
@@ -1319,6 +1397,17 @@ void MemRegionList::add(MemRegion *r)
     head = r;
     if (head->next)
         head->next->prev = head;
+
+    r->left = r->right = r->parent = nullptr;
+    r->height = 1;
+    MemRegion** slot = &root;
+    while (*slot) {
+        r->parent = *slot;
+        slot = reinterpret_cast<uintptr_t>(r) < reinterpret_cast<uintptr_t>(*slot)
+            ? &(*slot)->left : &(*slot)->right;
+    }
+    *slot = r;
+    rebalance(r->parent);
 }
 
 void MemRegionList::remove(MemRegion *r)
@@ -1330,6 +1419,30 @@ void MemRegionList::remove(MemRegion *r)
         r->next->prev = r->prev;
     if (r->prev)
         r->prev->next = r->next;
+
+    MemRegion* rebalanceFrom = r->parent;
+    if (!r->left) {
+        replaceInIndex(r, r->right);
+    } else if (!r->right) {
+        replaceInIndex(r, r->left);
+    } else {
+        MemRegion* successor = r->right;
+        while (successor->left)
+            successor = successor->left;
+        if (successor->parent != r) {
+            rebalanceFrom = successor->parent;
+            replaceInIndex(successor, successor->right);
+            successor->right = r->right;
+            successor->right->parent = successor;
+        } else {
+            rebalanceFrom = successor;
+        }
+        replaceInIndex(r, successor);
+        successor->left = r->left;
+        successor->left->parent = successor;
+        updateHeight(successor);
+    }
+    rebalance(rebalanceFrom);
 }
 
 #if __TBB_MALLOC_BACKEND_STAT
@@ -1421,6 +1534,7 @@ bool Backend::destroy()
         noError &= freeRawMem(regionList.head, regionList.head->allocSz);
         regionList.head = helper;
     }
+    regionList.root = nullptr;
     return noError;
 }
 
