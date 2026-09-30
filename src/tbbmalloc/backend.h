@@ -1,6 +1,7 @@
 /*
     Copyright (c) 2005-2023 Intel Corporation
     Copyright (c) 2026 UXL Foundation Contributors
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -98,6 +99,7 @@ enum MemRegionType {
 };
 
 class MemRegionList {
+    friend class Backend;
     MallocMutex regionListLock;
 public:
     MemRegion  *head;
@@ -365,6 +367,22 @@ public:
     /*---------------------------- Validation -------------------------------------*/
     bool inUserPool() const;
     bool ptrCanBeValid(void *ptr) const { return usedAddrRange.inRange(ptr); }
+
+    // Keep the region containing a candidate pointer mapped while its metadata
+    // is inspected. The address envelope above is only a preliminary filter:
+    // gaps between regions can belong to a different allocator.
+    class RegionGuard : tbb::detail::no_copy {
+        MallocMutex::scoped_lock lock;
+        uintptr_t regionBegin;
+        size_t regionSize;
+    public:
+        RegionGuard(Backend& backend, const void* object);
+        bool contains(const void* address, size_t size) const {
+            const uintptr_t p = reinterpret_cast<uintptr_t>(address);
+            return size && p >= regionBegin && size <= regionSize
+                && p - regionBegin <= regionSize - size;
+        }
+    };
 
     /*-------------------------- Configuration API --------------------------------*/
     // Soft heap limit

@@ -1,6 +1,6 @@
 /*
     Copyright (c) 2005-2025 Intel Corporation
-    Copyright (c) 2025 UXL Foundation Contributors
+    Copyright (c) 2025-2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -1294,6 +1294,20 @@ void Backend::startUseBlock(MemRegion *region, FreeBlock *fBlock, bool addToBin)
         fBlock->slabAligned = region->type == MEMREG_SLAB_BLOCKS ? true : false;
         fBlock->sizeTmp = fBlock->tryLockBlock();
         MALLOC_ASSERT(fBlock->sizeTmp >= FreeBlock::minBlockSize, "Locking must be successful");
+    }
+}
+
+Backend::RegionGuard::RegionGuard(Backend& backend, const void* object)
+    : lock(backend.regionList.regionListLock), regionBegin(0), regionSize(0)
+{
+    const uintptr_t p = reinterpret_cast<uintptr_t>(object);
+    for (MemRegion* region = backend.regionList.head; region; region = region->next) {
+        const uintptr_t begin = reinterpret_cast<uintptr_t>(region);
+        if (p >= begin && p - begin < region->allocSz) {
+            regionBegin = begin;
+            regionSize = region->allocSz;
+            break;
+        }
     }
 }
 

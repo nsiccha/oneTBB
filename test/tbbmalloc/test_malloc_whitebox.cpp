@@ -1678,6 +1678,74 @@ TEST_CASE("Main test case") {
     TestSlabAlignment();
 }
 
+// Region records and gaps are all backed by readable storage here. These
+// checks exercise ownership and metadata bounds without relying on OS layout.
+TEST_CASE("Ownership queries respect exact region bounds") {
+    Backend backend{};
+    MemRegion regions[3]{};
+    regions[0].allocSz = sizeof(MemRegion);
+    regions[2].allocSz = sizeof(MemRegion);
+    backend.regionList.add(&regions[0]);
+    backend.regionList.add(&regions[2]);
+
+    for (int i : {0, 2}) {
+        Backend::RegionGuard region(backend, &regions[i]);
+        REQUIRE(region.contains(&regions[i], sizeof(MemRegion)));
+        const uintptr_t begin = reinterpret_cast<uintptr_t>(&regions[i]);
+        const uintptr_t end = begin + sizeof(MemRegion);
+        REQUIRE(region.contains(reinterpret_cast<void*>(end - 1), 1));
+        REQUIRE_FALSE(region.contains(reinterpret_cast<void*>(begin - 1), 1));
+        REQUIRE_FALSE(region.contains(reinterpret_cast<void*>(end), 1));
+        REQUIRE_FALSE(region.contains(reinterpret_cast<void*>(end - 1), 2));
+        REQUIRE_FALSE(region.contains(&regions[i], SIZE_MAX));
+    }
+    {
+        // This address is between registered regions, but belongs to neither.
+        Backend::RegionGuard gap(backend, &regions[1]);
+        REQUIRE_FALSE(gap.contains(&regions[1], 1));
+        REQUIRE_FALSE(gap.contains(&regions[0], sizeof(MemRegion)));
+    }
+    backend.regionList.remove(&regions[0]);
+    {
+        Backend::RegionGuard released(backend, &regions[0]);
+        REQUIRE_FALSE(released.contains(&regions[0], 1));
+    }
+    backend.regionList.remove(&regions[2]);
+}
+
+TEST_CASE("Safe allocator entry points preserve mixed allocator ownership") {
+    if (!isMallocInitialized()) doInitialization();
+    auto system_free = [](void* ptr) { free(ptr); };
+    auto system_size = [](void*) -> size_t { return 123; };
+
+    utils::NativeParallelFor(4, [&](int) {
+        for (int iteration = 0; iteration < 100; ++iteration) {
+            for (size_t size : {size_t(32), size_t(1024), size_t(2 * slabSize)}) {
+                void* object = scalable_malloc(size);
+                REQUIRE(object);
+                REQUIRE(__TBB_malloc_safer_msize(object, nullptr) >= size);
+                void* grown = __TBB_malloc_safer_realloc(object, size * 2, nullptr);
+                REQUIRE(grown);
+                REQUIRE(__TBB_malloc_safer_msize(grown, nullptr) >= size * 2);
+                __TBB_malloc_safer_free(grown, system_free);
+
+                void* foreign = malloc(size);
+                REQUIRE(foreign);
+                REQUIRE(__TBB_malloc_safer_msize(foreign, nullptr) == 0);
+                REQUIRE(__TBB_malloc_safer_msize(foreign, system_size) == 123);
+                __TBB_malloc_safer_free(foreign, system_free);
+            }
+            for (size_t alignment : {size_t(64), size_t(slabSize), size_t(4 * slabSize)}) {
+                void* aligned = scalable_aligned_malloc(1000, alignment);
+                REQUIRE(aligned);
+                REQUIRE(__TBB_malloc_safer_msize(aligned, nullptr) >= 1000);
+                __TBB_malloc_safer_free(aligned, system_free);
+            }
+            scalable_allocation_command(TBBMALLOC_CLEAN_ALL_BUFFERS, nullptr);
+        }
+    });
+}
+
 //! \brief \ref error_guessing
 TEST_CASE("Decreasing reallocation") {
     if (!isMallocInitialized()) doInitialization();

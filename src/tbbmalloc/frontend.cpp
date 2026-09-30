@@ -2526,22 +2526,40 @@ bool isLargeObject(void *object)
         && getBackRef(idx) == header;
 }
 
-static inline bool isSmallObject (void *ptr)
-{
-    Block* expectedBlock = (Block*)alignDown(ptr, slabSize);
-    const BackRefIdx* idx = expectedBlock->getBackRefIdx();
-
-    bool isSmall = expectedBlock == getBackRef(safer_dereference(idx));
-    if (isSmall)
-        expectedBlock->checkFreePrecond(ptr);
-    return isSmall;
-}
+enum class RecognizedObject { foreignObject, smallObject, largeObject };
 
 /**** Check if an object was allocated by scalable_malloc ****/
-static inline bool isRecognized (void* ptr)
+static inline RecognizedObject recognizeObject(void* ptr)
 {
-    return defaultMemPool->extMemPool.backend.ptrCanBeValid(ptr) &&
-        (isLargeObject<unknownMem>(ptr) || isSmallObject(ptr));
+    Backend& backend = defaultMemPool->extMemPool.backend;
+    if (!backend.ptrCanBeValid(ptr))
+        return RecognizedObject::foreignObject;
+
+    // Do not read a prospective header until its entire span has been found in
+    // a live region. Holding the guard prevents releaseRegion from unmapping
+    // the region during inspection. Backreferences still determine ownership;
+    // mere membership in a region does not identify an allocation.
+    Block* block = static_cast<Block*>(alignDown(ptr, slabSize));
+    {
+        Backend::RegionGuard region(backend, ptr);
+        const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+        if (isAligned(ptr, largeObjectAlignment) && address >= sizeof(LargeObjectHdr)) {
+            const void* header = reinterpret_cast<const void*>(address - sizeof(LargeObjectHdr));
+            if (region.contains(header, sizeof(LargeObjectHdr)) && isLargeObject<ourMem>(ptr))
+                return RecognizedObject::largeObject;
+        }
+        if (!region.contains(block, sizeof(Block))
+            || block != getBackRef(dereference(block->getBackRefIdx())))
+            return RecognizedObject::foreignObject;
+    }
+    // Debug diagnostics may allocate; do not run them while holding the guard.
+    block->checkFreePrecond(ptr);
+    return RecognizedObject::smallObject;
+}
+
+static inline bool isRecognized(void* ptr)
+{
+    return recognizeObject(ptr) != RecognizedObject::foreignObject;
 }
 
 static inline void freeSmallObject(void *object)
@@ -2986,15 +3004,15 @@ extern "C" TBBMALLOC_EXPORT void __TBB_malloc_safer_free(void *object, void (*or
         return;
 
     // tbbmalloc can allocate object only when tbbmalloc has been initialized
-    if (mallocInitialized.load(std::memory_order_acquire) && defaultMemPool->extMemPool.backend.ptrCanBeValid(object)) {
-        if (isLargeObject<unknownMem>(object)) {
-            // must check 1st for large object, because small object check touches 4 pages on left,
-            // and it can be inaccessible
+    if (mallocInitialized.load(std::memory_order_acquire)) {
+        // recognizeObject releases its region guard before either free path
+        // can return memory to the backend.
+        const RecognizedObject kind = recognizeObject(object);
+        if (kind == RecognizedObject::largeObject) {
             TLSData *tls = defaultMemPool->getTLS(/*create=*/false);
-
             defaultMemPool->putToLLOCache(tls, object);
             return;
-        } else if (isSmallObject(object)) {
+        } else if (kind == RecognizedObject::smallObject) {
             freeSmallObject(object);
             return;
         }
