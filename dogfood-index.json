@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "line": {
+    "repo": "nsiccha/oneTBB",
+    "ref": "dogfood",
+    "sha": "f1e4e4b1bbef6e3b02e12d8c8022140df6f986f8"
+  },
+  "upstream": {
+    "repo": "uxlfoundation/oneTBB",
+    "ref": "master",
+    "sha": "9af569484fdfcf8e8a2534f4d67fb77e4963e230"
+  },
+  "prepared_at": "2026-11-18T12:00:08Z",
+  "problems": [
+    {
+      "id": "allocator-ownership",
+      "role": "fix",
+      "title": "Preserve allocation ownership when two allocators share a process",
+      "summary": "The allocator proxy must distinguish memory owned by oneTBB from allocations made elsewhere in the process. Issue #210 reports a crash in a macOS application using allocation interposition.",
+      "repairs": [],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/uxlfoundation/oneTBB/issues/210",
+          "relation": "related"
+        }
+      ],
+      "fix": {
+        "branch": "dogfood",
+        "commits": [
+          {
+            "sha": "c4f00b03cc803119fccdbeefa21b74cac6af3a99",
+            "title": "Check allocator ownership against currently live regions",
+            "original": [
+              "c4f00b03cc803119fccdbeefa21b74cac6af3a99"
+            ]
+          },
+          {
+            "sha": "d1d8007fe38e53628ae3c2bcdd3e7fa82b78b4a8",
+            "title": "Index live regions for logarithmic ownership lookups",
+            "original": [
+              "d1d8007fe38e53628ae3c2bcdd3e7fa82b78b4a8"
+            ]
+          }
+        ],
+        "why_together": "The first commit provides the ownership check and interoperability coverage. The second depends on it and replaces the linear scan in the allocation path with a balanced, allocation-free index. Both are required for the tested, scalable repair."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [
+        {
+          "base": "9af569484fdfcf8e8a2534f4d67fb77e4963e230",
+          "tests": [
+            "CMake Release targets tbbmalloc and test_malloc_whitebox",
+            "CTest test_malloc_whitebox (complete executable)"
+          ],
+          "result": "passed",
+          "detail": "8 cases and 10,349,356 assertions passed. The full oneTBB build, other CTest targets and macOS were outside this run. Tested dogfood commit f1e4e4b1bbef6e3b02e12d8c8022140df6f986f8.",
+          "native_build": "Linux x86_64, GCC 15.2.0, CMake Release"
+        }
+      ],
+      "draft": {
+        "title": "Preserve allocation ownership when two allocators share a process",
+        "body": "**Summary.** A process can use oneTBB and its original allocator at the same time. Existing upstream report #210 describes a crash with allocator interposition on macOS. Whether that application has the same underlying cause remains unverified.\n\n**Expected behavior.** Memory remains associated with the allocator that owns it, including as allocator regions are added or released.\n\n**Compatibility check.** On the repaired tree, configure a Release build with `TBB_TEST=ON`, build `tbbmalloc` and `test_malloc_whitebox`, and run `ctest -R '^test_malloc_whitebox$'`. The suite checks ordinary mixed allocations, region boundaries and index consistency. All eight cases passed on Ubuntu 26.04.1 x86-64, AMD Ryzen 9 9950X, GCC 15.2.0.\n\n**Fix.** Check ownership against live allocator regions while holding the region lock, then validate the allocator’s back-reference. An allocation-free balanced index keeps that lookup logarithmic as the number of live regions grows.",
+        "prepared_at": "2026-11-18T12:00:08Z"
+      }
+    }
+  ]
+}
