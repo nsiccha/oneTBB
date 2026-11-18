@@ -1678,6 +1678,128 @@ TEST_CASE("Main test case") {
     TestSlabAlignment();
 }
 
+// Region records and gaps are all backed by readable storage here. These
+// checks exercise ownership and metadata bounds without relying on OS layout.
+TEST_CASE("Ownership queries respect exact region bounds") {
+    Backend backend{};
+    MemRegion regions[3]{};
+    regions[0].allocSz = sizeof(MemRegion);
+    regions[2].allocSz = sizeof(MemRegion);
+    backend.regionList.add(&regions[0]);
+    backend.regionList.add(&regions[2]);
+
+    for (int i : {0, 2}) {
+        Backend::RegionGuard region(backend, &regions[i]);
+        REQUIRE(region.contains(&regions[i], sizeof(MemRegion)));
+        const uintptr_t begin = reinterpret_cast<uintptr_t>(&regions[i]);
+        const uintptr_t end = begin + sizeof(MemRegion);
+        REQUIRE(region.contains(reinterpret_cast<void*>(end - 1), 1));
+        REQUIRE_FALSE(region.contains(reinterpret_cast<void*>(begin - 1), 1));
+        REQUIRE_FALSE(region.contains(reinterpret_cast<void*>(end), 1));
+        REQUIRE_FALSE(region.contains(reinterpret_cast<void*>(end - 1), 2));
+        REQUIRE_FALSE(region.contains(&regions[i], SIZE_MAX));
+    }
+    {
+        // This address is between registered regions, but belongs to neither.
+        Backend::RegionGuard gap(backend, &regions[1]);
+        REQUIRE_FALSE(gap.contains(&regions[1], 1));
+        REQUIRE_FALSE(gap.contains(&regions[0], sizeof(MemRegion)));
+    }
+    backend.regionList.remove(&regions[0]);
+    {
+        Backend::RegionGuard released(backend, &regions[0]);
+        REQUIRE_FALSE(released.contains(&regions[0], 1));
+    }
+    backend.regionList.remove(&regions[2]);
+}
+
+static int CheckRegionIndex(const MemRegion* region, const MemRegion* parent,
+                            uintptr_t lower, uintptr_t upper, int& count) {
+    if (!region) return 0;
+    const uintptr_t address = reinterpret_cast<uintptr_t>(region);
+    REQUIRE(address > lower);
+    REQUIRE(address < upper);
+    REQUIRE(region->parent == parent);
+    ++count;
+    const int left = CheckRegionIndex(region->left, region, lower, address, count);
+    const int right = CheckRegionIndex(region->right, region, address, upper, count);
+    REQUIRE(left <= right + 1);
+    REQUIRE(right <= left + 1);
+    REQUIRE(region->height == 1 + std::max(left, right));
+    return region->height;
+}
+
+TEST_CASE("Region index remains balanced through insertion and removal") {
+    const int count = 257;
+    for (int order : {0, 1, 2}) {
+        Backend backend{};
+        MemRegion regions[2 * count]{};
+        bool present[count]{};
+        for (int i = 0; i < count; ++i) {
+            const int slot = order == 0 ? i : order == 1 ? count - 1 - i : (73 * i) % count;
+            regions[2 * slot].allocSz = sizeof(MemRegion);
+            backend.regionList.add(&regions[2 * slot]);
+            present[slot] = true;
+            int indexed = 0;
+            CheckRegionIndex(backend.regionList.root, nullptr, 0, UINTPTR_MAX, indexed);
+            REQUIRE(indexed == i + 1);
+        }
+        for (int i = 0; i < count; ++i) {
+            const int slot = (101 * i) % count;
+            backend.regionList.remove(&regions[2 * slot]);
+            present[slot] = false;
+            int indexed = 0;
+            CheckRegionIndex(backend.regionList.root, nullptr, 0, UINTPTR_MAX, indexed);
+            REQUIRE(indexed == count - 1 - i);
+            for (int j = 0; j < count; ++j) {
+                {
+                    Backend::RegionGuard region(backend, &regions[2 * j]);
+                    REQUIRE(region.contains(&regions[2 * j], sizeof(MemRegion)) == present[j]);
+                }
+                {
+                    Backend::RegionGuard gap(backend, &regions[2 * j + 1]);
+                    REQUIRE_FALSE(gap.contains(&regions[2 * j + 1], 1));
+                }
+            }
+        }
+        REQUIRE(backend.regionList.root == nullptr);
+        REQUIRE(backend.regionList.head == nullptr);
+    }
+}
+
+TEST_CASE("Safe allocator entry points preserve mixed allocator ownership") {
+    if (!isMallocInitialized()) doInitialization();
+    auto system_free = [](void* ptr) { free(ptr); };
+    auto system_size = [](void*) -> size_t { return 123; };
+
+    utils::NativeParallelFor(4, [&](int) {
+        for (int iteration = 0; iteration < 100; ++iteration) {
+            for (size_t size : {size_t(32), size_t(1024), size_t(2 * slabSize)}) {
+                void* object = scalable_malloc(size);
+                REQUIRE(object);
+                REQUIRE(__TBB_malloc_safer_msize(object, nullptr) >= size);
+                void* grown = __TBB_malloc_safer_realloc(object, size * 2, nullptr);
+                REQUIRE(grown);
+                REQUIRE(__TBB_malloc_safer_msize(grown, nullptr) >= size * 2);
+                __TBB_malloc_safer_free(grown, system_free);
+
+                void* foreign = malloc(size);
+                REQUIRE(foreign);
+                REQUIRE(__TBB_malloc_safer_msize(foreign, nullptr) == 0);
+                REQUIRE(__TBB_malloc_safer_msize(foreign, system_size) == 123);
+                __TBB_malloc_safer_free(foreign, system_free);
+            }
+            for (size_t alignment : {size_t(64), size_t(slabSize), size_t(4 * slabSize)}) {
+                void* aligned = scalable_aligned_malloc(1000, alignment);
+                REQUIRE(aligned);
+                REQUIRE(__TBB_malloc_safer_msize(aligned, nullptr) >= 1000);
+                __TBB_malloc_safer_free(aligned, system_free);
+            }
+            scalable_allocation_command(TBBMALLOC_CLEAN_ALL_BUFFERS, nullptr);
+        }
+    });
+}
+
 //! \brief \ref error_guessing
 TEST_CASE("Decreasing reallocation") {
     if (!isMallocInitialized()) doInitialization();
