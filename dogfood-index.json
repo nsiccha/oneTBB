@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/oneTBB",
     "ref": "dogfood",
-    "sha": "f1e4e4b1bbef6e3b02e12d8c8022140df6f986f8"
+    "sha": "c848ddc3d6523ebcb8e7713dba8e9611ca11f1c1"
   },
   "upstream": {
     "repo": "uxlfoundation/oneTBB",
     "ref": "master",
-    "sha": "9af569484fdfcf8e8a2534f4d67fb77e4963e230"
+    "sha": "75a3650cbf9fdd31a256de5c0e1161e6570ed341"
   },
-  "prepared_at": "2026-11-18T12:00:08Z",
+  "prepared_at": "2026-11-18T19:40:29Z",
   "problems": [
     {
       "id": "allocator-ownership",
@@ -47,6 +47,16 @@
       "depends_on": [],
       "requires": [],
       "validation": [
+        {
+          "base": "75a3650cbf9fdd31a256de5c0e1161e6570ed341",
+          "tests": [
+            "CTest test_malloc_whitebox (complete executable)",
+            "CTest test_global_control (complete executable)"
+          ],
+          "result": "passed",
+          "detail": "Allocator whitebox passed 8 cases (10,349,356 assertions). Global control passed 11 cases (130 assertions), including selection after a control is removed. Tested dogfood commit c848ddc3d6523ebcb8e7713dba8e9611ca11f1c1. Coverage was limited to these two Linux executables. The macOS application in issue #210 remains untested.",
+          "native_build": "Ubuntu 26.04.1 x86-64, GCC 15.2.0, CMake Release"
+        },
         {
           "base": "9af569484fdfcf8e8a2534f4d67fb77e4963e230",
           "tests": [
