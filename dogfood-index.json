@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/oneTBB",
     "ref": "dogfood",
-    "sha": "c848ddc3d6523ebcb8e7713dba8e9611ca11f1c1"
+    "sha": "4be3bb1fe16ebf1f4180dcf427c6d2701933f4cc"
   },
   "upstream": {
     "repo": "uxlfoundation/oneTBB",
     "ref": "master",
-    "sha": "75a3650cbf9fdd31a256de5c0e1161e6570ed341"
+    "sha": "e497f2446c2edd37cf7b90ab8bbb5435e4690f72"
   },
-  "prepared_at": "2026-11-18T19:40:29Z",
+  "prepared_at": "2026-11-21T11:37:42Z",
   "problems": [
     {
       "id": "allocator-ownership",
@@ -47,6 +47,18 @@
       "depends_on": [],
       "requires": [],
       "validation": [
+        {
+          "base": "e497f2446c2edd37cf7b90ab8bbb5435e4690f72",
+          "result": "passed",
+          "native_build": "Ubuntu 26.04.1 LTS x86-64, GCC 15.2.0, CMake Release",
+          "tests": [
+            "CTest test_malloc_whitebox",
+            "CTest test_global_control",
+            "CTest test_tbb_shutdown",
+            "CTest test_concurrent_vector"
+          ],
+          "detail": "All four Linux executables passed. Allocator whitebox passed 8 cases, global control 11, process shutdown 1 and concurrent vector 16. The two allocator commits reproduced the tested tree when applied to upstream master. Tested dogfood commit 4be3bb1fe16ebf1f4180dcf427c6d2701933f4cc. The macOS application in issue #210 remains untested."
+        },
         {
           "base": "75a3650cbf9fdd31a256de5c0e1161e6570ed341",
           "tests": [
